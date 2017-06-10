@@ -92,16 +92,18 @@ class TripScraper
   def get_last_trip
     page.driver.browser.js_errors = false
 
-    # login
-    visit '/login'
-    fill_in 'Username', with: Secrets::DIVVY_USERNAME
-    fill_in 'Password', with: Secrets::DIVVY_PASSWORD
-    click_button 'Login'
-    sleep(1.0)
+    # go straight to trips in case we're logged in already
+    visit '/account/trips'
 
-    # go to trips
-    click_link('Trips')
-    sleep(1.0)
+    # login if we need to
+    if page.has_selector?('#login-form')
+      puts 'Logging in...'
+
+      fill_in 'Username', with: Secrets::DIVVY_USERNAME
+      fill_in 'Password', with: Secrets::DIVVY_PASSWORD
+      click_button 'Login'
+      sleep(1.0)
+    end
 
     # get last trip or message saying there are none
     tds = page.all('#tripTable tbody tr').last.all('td')
@@ -139,5 +141,5 @@ loop do
   end
 
   last_trip = trip
-  sleep (last_trip.in_progress? ? 10 : 60)
+  sleep (last_trip.in_progress? ? 5 : 30)
 end
