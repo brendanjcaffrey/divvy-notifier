@@ -1,6 +1,8 @@
 require 'capybara'
 require 'capybara/dsl'
 require 'capybara/poltergeist'
+require 'date'
+require 'twilio-ruby'
 require_relative 'secrets.rb'
 
 Capybara.default_driver    = :poltergeist
@@ -12,6 +14,32 @@ Trip = Struct.new(:id, :start_station, :start_time, :end_station, :end_time, :du
   def to_s
     "(#{id}) #{start_station}@#{start_time_str}-#{end_station}@#{end_time_str}#{duration_str}"
   end
+
+  def started_summary
+    "Trip started #{start_time_str} at #{start_station}"
+  end
+
+  def ended_summary
+    "Trip ended #{end_time_str} at #{end_station} (#{duration})"
+  end
+
+  def running_out_of_time_summary
+    "Trip started #{start_time_str} has about five minutes left"
+  end
+
+  def running_out_of_time?
+    return false unless in_progress?
+
+    seconds_in_progress = Time.now - Time.parse(start_time)
+    seconds_in_progress > 24*60
+    #seconds_in_progress > 3*60 # TODO
+  end
+
+  def in_progress?
+    duration.empty? && end_station == 'Trip Open' && end_time == 'Trip Open'
+  end
+
+  private
 
   def duration_str
     duration.empty? ? '' : " (#{duration})"
@@ -25,12 +53,6 @@ Trip = Struct.new(:id, :start_station, :start_time, :end_station, :end_time, :du
     in_progress? ? end_time : simplify_time(end_time)
   end
 
-  private
-
-  def in_progress?
-    duration.empty? && end_station == 'Trip Open' && end_time == 'Trip Open'
-  end
-
   def simplify_time(time) # '06/01/2017 12:09 PM' -> '12:09pm'
     time[-8..-4] + time[-2..-1].downcase
   end
@@ -39,6 +61,28 @@ end
 NoTrip = Struct.new(:message) do
   def to_s
     'None found for this month'
+  end
+
+  def id
+    nil
+  end
+
+  def in_progress?
+    false
+  end
+end
+
+class SMS
+  def initialize
+    @client = Twilio::REST::Client.new(Secrets::TWILIO_SID, Secrets::TWILIO_AUTHTOKEN)
+  end
+
+  def send(text)
+    @client.account.messages.create({
+      :from => Secrets::TWILIO_FROM,
+      :to => Secrets::TWILIO_TO,
+      :body => text
+    })
   end
 end
 
@@ -69,12 +113,31 @@ class TripScraper
   end
 end
 
-scraper = TripScraper.new
+sender    = SMS.new
+scraper   = TripScraper.new
+last_trip = NoTrip.new('init')
+alerted   = false
 loop do
-  puts "[#{Time.now.to_i}] Scraping page..."
-
   trip = scraper.get_last_trip
   puts "[#{Time.now.to_i}] #{trip.to_s}"
 
-  sleep 60
+  # same trip but status changed - that should mean the trip ended
+  if last_trip.id == trip.id && last_trip.in_progress? != trip.in_progress?
+    sender.send(trip.ended_summary)
+  end
+
+  # new trip id and the current trip is in progress - just started
+  if last_trip.id != trip.id && trip.in_progress?
+    sender.send(trip.started_summary)
+  end
+
+  if trip.running_out_of_time?
+    sender.send("#{trip.running_out_of_time_summary}") unless alerted
+    alerted = true
+  else
+    alerted = false
+  end
+
+  last_trip = trip
+  sleep (last_trip.in_progress? ? 10 : 60)
 end
